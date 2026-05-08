@@ -9,7 +9,7 @@ with open(".streamlit/prompts.toml", "rb") as f:
     prompts = tomllib.load(f)
 
 # 2. 設定 Gemini (確保 secrets 有設好)
-genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+genai.configure(api_key=st.secrets["keys"]["GEMINI_API_KEY"])
 
 st.title("🏠 Lease AI 租房助手")
 
@@ -39,7 +39,7 @@ with tab1:
         user_quest = st.session_state["user_msg"]
         
         chat_model = genai.GenerativeModel(
-            model_name='gemini-2.5-flash',
+            model_name='gemini-3.1-flash-lite-preview',
             system_instruction=prompts["chat_bot"]["system_instruction"]
         )
         
@@ -57,6 +57,7 @@ with tab2:
         name = st.text_input("全名*")
         email = st.text_input("信箱*")
         occ = st.text_input("職業")
+        mid = st.date_input("入住日")
         msg = st.text_area("給屋主的話")
         submitted = st.form_submit_button("確認送出")
         
@@ -67,6 +68,7 @@ with tab2:
                     "full_name": name,
                     "email": email,
                     "occupation": occ,
+                    "move_in_date": mid.isoformat(),
                     "message": msg,
                     "ai_status": "pending"  # 標記為待處理
                 }

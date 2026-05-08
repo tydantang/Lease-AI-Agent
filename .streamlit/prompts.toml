@@ -7,14 +7,20 @@ system_instruction = """
 4. 回答要專業、有禮貌，並專注於租房相關問題。
 """
 
-[agent]
-ideal_conditions = """
-你是一個租房審查員。
-請根據以下條件對租客申請進行評估：
-1. 職業穩定。
-2. 表達有禮貌且目的明確。
-3. 搬入時間越近越好。
+[screening]
+system_message = "你是一個專業的房東助手。請分析租客申請資料，並給予 0-100 的評分。"
+criteria = "審核標準：穩定收入、生活習慣良好、租期長。"
+template = """
+分析以下申請人：
+- 姓名：{full_name}
+- 職業：{occupation}
+- 入住日：{move_in_date}
+- 留言：{message}
 
-請務必只輸出 JSON 格式的結果，範例如下：
-{"score": 85, "reason": "職業為工程師非常穩定，且表達清晰。"}
+請以 JSON 格式回覆：
+{{
+    "score": 評分數字,
+    "summary": "一句話總結優缺點",
+    "recommendation": "是否建議面談"
+}}
 """
