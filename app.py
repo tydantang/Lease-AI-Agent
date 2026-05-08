@@ -1,17 +1,20 @@
 import streamlit as st
-import google.generativeai as genai
+# genai 的配置已移往 models.py，這裡只需 import 必要的工具
 import tomllib
-import json
 from database import save_application
+from models import get_model_pipeline, get_gen_config  # 引入新工具
 
-# 1. 讀取設定與指令
+# --- 取得環境標籤 ---
+current_env = st.secrets.get("config", {}).get("ENV", "prod").upper()
+
+# --- 讀取設定與指令 ---
 with open(".streamlit/prompts.toml", "rb") as f:
     prompts = tomllib.load(f)
 
-# 2. 設定 Gemini (確保 secrets 有設好)
-genai.configure(api_key=st.secrets["keys"]["GEMINI_API_KEY"])
+with open(".streamlit/form_schema.toml", "rb") as f:
+    form_config = tomllib.load(f)
 
-st.title("🏠 Lease AI 租房助手")
+st.title(f"🏠 Lease AI 租房助手 ({current_env})")
 
 # --- UI 分頁 ---
 tab1, tab2 = st.tabs(["AI 諮詢", "提交申請"])
@@ -19,61 +22,79 @@ tab1, tab2 = st.tabs(["AI 諮詢", "提交申請"])
 with tab1:
     st.subheader("有任何問題嗎？問問 AI")
 
-    # 1. 定義一個清空輸入框的函式
     def clear_chat_input():
-        # 把目前輸入的東西存到一個暫存變數
         st.session_state["user_msg"] = st.session_state["temp_input"]
-        # 清空輸入框
         st.session_state["temp_input"] = ""
 
-    # 2. 使用 st.text_input 並綁定回調
     st.text_input(
         "您可以詢問空房時間、居住條款等：", 
         key="temp_input", 
         on_change=clear_chat_input
     )
 
-    # 3. 處理對話邏輯
-    # 檢查 session_state 裡有沒有剛剛存下來的 user_msg
     if "user_msg" in st.session_state and st.session_state["user_msg"]:
         user_quest = st.session_state["user_msg"]
         
-        chat_model = genai.GenerativeModel(
-            model_name='gemini-3.1-flash-lite-preview',
-            system_instruction=prompts["chat_bot"]["system_instruction"]
-        )
+        # --- 改進後的 AI 執行與回報邏輯 ---
+        instruction = prompts["chat_bot"]["system_instruction"]
+        pipeline = get_model_pipeline(instruction) # 獲取模型管線
+        
+        response_text = None
         
         with st.spinner("AI 思考中..."):
-            response = chat_model.generate_content(user_quest)
+            for model, model_name in pipeline:
+                try:
+                    # 執行呼叫
+                    response = model.generate_content(user_quest)
+                    response_text = response.text
+                    break # 成功獲取結果，跳出備援迴圈
+                except Exception as e:
+                    # 回報錯誤，迴圈會自動進入下一輪拿取下一個 model
+                    st.warning(f"⚠️ 模型 {model_name} 暫時無法使用，正在嘗試備援方案... (錯誤: {e})")
+                    continue
+
+        if response_text:
             st.markdown(f"**你問：** {user_quest}")
-            st.markdown(f"**AI 回覆：**\n\n{response.text}")
+            st.markdown(f"**AI 回覆：**\n\n{response_text}")
+        else:
+            st.error("❌ 抱歉，目前所有 AI 服務均無法回應，請稍後再試。")
             
-        # 處理完後清空，避免下次重新整理又跑一次
         st.session_state["user_msg"] = ""
 
 with tab2:
     st.subheader("填寫租屋申請單")
+    
+    # 用來暫存表單輸入的字典
+    new_applicant_data = {}
+    
     with st.form("lease_form", clear_on_submit=True):
-        name = st.text_input("全名*")
-        email = st.text_input("信箱*")
-        occ = st.text_input("職業")
-        mid = st.date_input("入住日")
-        msg = st.text_area("給屋主的話")
+        # 根據 schema 自動產生成員
+        for field in form_config["fields"]:
+            fid = field["id"]
+            label = field["label"]
+            ftype = field["type"]
+            
+            if ftype == "text":
+                new_applicant_data[fid] = st.text_input(label)
+            elif ftype == "date":
+                # Streamlit date_input 回傳 date 物件，需轉字串存入 SQL
+                val = st.date_input(label)
+                new_applicant_data[fid] = val.isoformat()
+            elif ftype == "area":
+                new_applicant_data[fid] = st.text_area(label)
+        
         submitted = st.form_submit_button("確認送出")
         
         if submitted:
-            if name and email:
-                # 這裡「只存資料」，完全不呼叫 AI
-                new_data = {
-                    "full_name": name,
-                    "email": email,
-                    "occupation": occ,
-                    "move_in_date": mid.isoformat(),
-                    "message": msg,
-                    "ai_status": "pending"  # 標記為待處理
-                }
-                save_application(new_data)
-                st.success("✅ 申請已收到！我們會盡快審核並聯繫您。")
-                st.balloons() # 給使用者正向反饋
+            # 檢查必填欄位
+            missing = [f["label"] for f in form_config["fields"] 
+                       if f["required"] and not new_applicant_data.get(f["id"])]
+            
+            if not missing:
+                # 補上 AI 初始狀態
+                new_applicant_data["ai_status"] = "pending"
+                save_application(new_applicant_data)
+                st.success("✅ 申請已收到！我們會盡快審核。")
+                st.balloons()
             else:
-                st.warning("請填寫必填欄位。")
+                st.warning(f"請填寫必填欄位：{', '.join(missing)}")

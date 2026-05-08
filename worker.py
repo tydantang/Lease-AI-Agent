@@ -4,25 +4,22 @@ import json
 from email.mime.text import MIMEText
 from email.header import Header
 import streamlit as st
-from supabase import create_client, Client
-import google.generativeai as genai
+import tomllib # 確保有引入
+from database import get_applications_table
+from models import get_model_pipeline, get_gen_config # 引入新工具
+from template_generator import generate_data_template # 引入資料模版生成工具
 
-# 1. 初始化連線
+# --- 1. 初始化連線與環境隔離邏輯 ---
+
 @st.cache_resource
-def init_connection():
-    url = st.secrets["supabase"]["SUPABASE_URL"]
-    key = st.secrets["supabase"]["SUPABASE_SERVICE_KEY"]
-    return create_client(url, key)
 
-supabase = init_connection()
+# --- 2. 發信模組 (維持原樣) ---
 
-# 2. 發信模組
 def send_email(subject, body):
     sender = st.secrets["email"]["SENDER"]
     password = st.secrets["email"]["PASSWORD"]
     receiver = st.secrets["email"]["RECEIVER"]
     
-    # 設定 SMTP 伺服器 (Gmail)
     smtp_server = "smtp.gmail.com"
     smtp_port = 465 # SSL
     
@@ -40,53 +37,78 @@ def send_email(subject, body):
         print(f"發信失敗: {e}")
         return False
 
-# 3. AI 審核模組
+# --- 3. AI 審核模組 (維持原樣，僅微調註解) ---
+
 def analyze_applicant(data):
-    # 1. 從 prompts.toml 讀取設定
+    # 1. 讀取設定與 Schema
     with open(".streamlit/prompts.toml", "rb") as f:
-        import tomllib
         prompts = tomllib.load(f)
+    with open(".streamlit/form_schema.toml", "rb") as f:
+        schema = tomllib.load(f)
     
+    # 2. 準備 AI 指令與資料模版
     config = prompts["screening"]
+    # 這裡的 instruction 是傳給 get_model_pipeline 當 system_instruction 用的
+    system_instruction = config["system_message"] 
     
-    # 2. 設定 Gemini API
-    # 確保你的 secrets.toml 裡有 GEMINI_API_KEY
-    genai.configure(api_key=st.secrets["keys"]["GEMINI_API_KEY"])
-    model = genai.GenerativeModel('gemini-3.1-flash-lite-preview') # 使用 flash 版本，速度快且免費額度高
+    # 生成資料填充區 (例如: - 全名*: {full_name} ...)
+    data_template = generate_data_template(schema)
     
-    # 3. 組合 Prompt
-    prompt_content = f"{config['system_message']}\n{config['criteria']}\n{config['template'].format(**data)}"
-    st.write(prompt_content)
-
-    # 4. 呼叫 Gemini
-    response = model.generate_content(
-        prompt_content,
-        generation_config={"response_mime_type": "application/json"} # 強制要求 JSON
-    )
-
-    st.write(json.loads(response.text))
+    # 拼裝完整的 Prompt 結構
+    # 順序：審核標準 -> 動態資料區 -> JSON 格式要求
+    full_prompt_template = f"{config['criteria']}\n\n{data_template}\n\n{config['json_format']}"
     
-    # 5. 解析回傳結果
+    # 【關鍵步驟】將實際的租客資料 (data) 填入模版
     try:
-        result = json.loads(response.text)
-        return result.get("score"), result.get("summary")
-    except Exception as e:
-        st.error(f"AI 解析失敗: {e}")
-        return 0, "AI 回傳格式錯誤"
+        final_prompt = full_prompt_template.format(**data)
+    except KeyError as e:
+        st.error(f"❌ 欄位缺失：資料庫中找不到 {e} 欄位，請檢查 Schema 與資料庫是否同步。")
+        return 0, "資料欄位不匹配"
 
-# 4. 主迴圈：監控資料庫
+    # 3. 獲取模型管線
+    pipeline = get_model_pipeline(system_instruction)
+    
+    # 4. 遍歷管線中的模型，直到成功為止
+    for model, model_name in pipeline:
+        try:
+            # 呼叫 Gemini
+            response = model.generate_content(
+                final_prompt,
+                generation_config=get_gen_config(is_json=True)
+            )
+            
+            # 嘗試解析結果
+            result = json.loads(response.text)
+            st.info(f"✨ 使用模型 {model_name} 分析成功")
+            
+            # 回傳分數與總結
+            return result.get("score", 0), result.get("summary", "無總結")
+            
+        except Exception as e:
+            # 如果是 API 失敗或 JSON 解析失敗，回報並試下一個
+            st.warning(f"⚠️ 模型 {model_name} 分析失敗，嘗試備援方案... (錯誤: {e})")
+            continue
+
+    # 5. 如果所有模型都試過且都失敗
+    st.error("❌ 所有 AI 模型皆無法完成審核。")
+    return 0, "AI 服務暫時中斷，請稍後手動檢查"
+
+# --- 4. 主迴圈：監控資料庫 (引入動態 Table) ---
+
 def main():
-    st.title("🤖 租房 AI 自動化管家")
-    st.write("監控中：等待新申請或處理待寄通知...")
+    # 取得當前環境標籤
+    current_env = st.secrets.get("config", {}).get("ENV", "prod").upper()
+    st.title(f"🤖 租房 AI 自動化管家 ({current_env})")
+    st.write(f"監控中：正在巡檢資料表...")
     
-    CHECK_INTERVAL = 30  # 檢查頻率
+    app_table = get_applications_table(use_admin=True)
     
-    # 建立一個佔位符，用來顯示倒數計時，避免畫面一直跳動
+    CHECK_INTERVAL = 30 
     status_placeholder = st.empty()
 
     while True:
-        # --- 第一部分：AI 審核流程 (處理 pending) ---
-        pending_res = supabase.table("applications").select("*").eq("ai_status", "pending").execute()
+        # --- 第一部分：AI 審核流程 ---
+        pending_res = app_table.select("*").eq("ai_status", "pending").execute()
         new_applicants = pending_res.data
         
         if new_applicants:
@@ -95,60 +117,42 @@ def main():
                 score, summary = analyze_applicant(person)
                 
                 if score is not None:
-                    # 更新 AI 評分結果，但此時 landlord_notified 預設仍為 false
-                    supabase.table("applications").update({
+                    # 更新 AI 分析結果
+                    app_table.update({
                         "ai_status": "reviewed",
                         "ai_score": score,
-                        "ai_summary": summary
+                        "ai_summary": summary,
+                        "landlord_notified": False # 確保進入下一階段的屋主查看流程
                     }).eq("id", person["id"]).execute()
                     st.success(f"✅ {person['full_name']} 分析完成 (得分: {score})")
-                time.sleep(1) # 短暫停頓避免連發
+                time.sleep(1)
 
-        # --- 第二部分：通知流程 (處理已審核但未通知房東的資料) ---
-        # 這裡會抓取 ai_status='reviewed' 且 landlord_notified=False 的人
-        notify_res = supabase.table("applications").select("*")\
+        # --- 第二部分：屋主查看通知 (僅在介面提示，不發信) ---
+        notify_res = app_table.select("*")\
             .eq("ai_status", "reviewed")\
             .eq("landlord_notified", False).execute()
         
-        to_notify = notify_res.data
+        to_review = notify_res.data
         
-        if to_notify:
-            for person in to_notify:
-                st.warning(f"📧 正在為 {person['full_name']} 發送通知信...")
+        if to_review:
+            for person in to_review:
+                score = person.get('ai_score', 0)
                 
-                # 只有分數大於等於 80 才寄信（或是你想全部寄，就把 if 刪掉）
-                should_send = person.get('ai_score', 0) >= 80
-                
-                if should_send:
-                    subject = f"🔔 高分租客通知：{person['full_name']} ({person['ai_score']}分)"
-                    body = f"""
-                    屋主您好，系統發現一位優秀申請者：
-                    
-                    姓名：{person['full_name']}
-                    評分：{person['ai_score']}
-                    分析：{person['ai_summary']}
-                    
-                    面試預約狀態：目前尚未預約
-                    """
-                    
-                    # 寄信並根據結果更新資料庫
-                    if send_email(subject, body):
-                        supabase.table("applications").update({
-                            "landlord_notified": True
-                        }).eq("id", person["id"]).execute()
-                        st.success(f"📬 {person['full_name']} 的通知已送達房東信箱")
-                    else:
-                        st.error(f"❌ {person['full_name']} 的通知信發送失敗，稍後重試")
+                # 分數達標 (>= 80)，在介面給予特別視覺提醒
+                if score >= 80:
+                    st.warning(f"🌟 發現高分申請者！建議屋主優先查看：{person['full_name']} ({score}分)")
+                    # 這裡原本是 send_email，現在我們只標記為已在 Worker 介面提醒過
                 else:
-                    # 分數不到 80 分，雖然不寄信，但也要標記為「已處理通知」，否則會卡在迴圈
-                    supabase.table("applications").update({
-                        "landlord_notified": True 
-                    }).eq("id", person["id"]).execute()
-                    st.write(f"ℹ️ {person['full_name']} 分數未達標，不寄發通知。")
+                    st.write(f"📄 已完成分析：{person['full_name']} ({score}分)")
 
-        # --- 無新資料時的狀態顯示 ---
-        if not new_applicants and not to_notify:
-            status_placeholder.write(f"😴 目前無新進度，{CHECK_INTERVAL} 秒後再次巡檢...")
+                # 更新標記，代表 Worker 已經處理過這筆「已分析」的資料
+                app_table.update({
+                    "landlord_notified": True 
+                }).eq("id", person["id"]).execute()
+
+        # --- 狀態顯示 ---
+        if not new_applicants and not to_review:
+            status_placeholder.write(f"😴 目前無新進度 ({current_env})，{CHECK_INTERVAL} 秒後再次巡檢...")
         else:
             status_placeholder.empty()
 

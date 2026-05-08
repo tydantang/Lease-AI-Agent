@@ -1,0 +1,41 @@
+[[fields]]
+id = "full_name"
+label = "全名*"
+type = "text"
+required = true
+ai_include = true
+
+[[fields]]
+id = "email"
+label = "信箱*"
+type = "text"
+required = true
+ai_include = false
+
+[[fields]]
+id = "occupation"
+label = "職業"
+type = "text"
+required = false
+ai_include = true
+
+[[fields]]
+id = "move_in_date"
+label = "入住日*"
+type = "date"
+required = true
+ai_include = true
+
+[[fields]]
+id = "move_out_date"
+label = "搬出日*"
+type = "date"
+required = true
+ai_include = true
+
+[[fields]]
+id = "message"
+label = "給屋主的話"
+type = "area"
+required = false
+ai_include = true
