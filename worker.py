@@ -127,28 +127,55 @@ def main():
                     st.success(f"✅ {person['full_name']} 分析完成 (得分: {score})")
                 time.sleep(1)
 
-        # --- 第二部分：屋主查看通知 (僅在介面提示，不發信) ---
+# --- 第二部分：屋主查看與郵件通知流程 ---
         notify_res = app_table.select("*")\
             .eq("ai_status", "reviewed")\
             .eq("landlord_notified", False).execute()
         
-        to_review = notify_res.data
+        to_notify = notify_res.data
         
-        if to_review:
-            for person in to_review:
+        if to_notify:
+            for person in to_notify:
                 score = person.get('ai_score', 0)
+                full_name = person.get('full_name', '未知姓名')
                 
-                # 分數達標 (>= 80)，在介面給予特別視覺提醒
+                # 只有分數 >= 80 才需要寄信
                 if score >= 80:
-                    st.warning(f"🌟 發現高分申請者！建議屋主優先查看：{person['full_name']} ({score}分)")
-                    # 這裡原本是 send_email，現在我們只標記為已在 Worker 介面提醒過
+                    st.warning(f"🌟 發現高分申請者：{full_name} ({score}分)，準備寄送 Email...")
+                    
+                    # 準備郵件內容
+                    subject = f"【優質租客預警】{full_name} 獲得了 {score} 分！"
+                    body = f"""
+                    屋主您好：
+                    
+                    AI 助手發現了一位優質申請者：
+                    姓名：{full_name}
+                    職業：{person.get('occupation')}
+                    AI 評分：{score}
+                    AI 總結：{person.get('ai_summary')}
+                    
+                    請儘速登入後台查看詳細資料。
+                    """
+                    
+                    # 執行寄信
+                    mail_success = send_email(subject, body)
+                    
+                    if mail_success:
+                        st.success(f"📧 已成功寄信通知屋主：{full_name}")
+                        # 寄信成功，才更新資料庫標記為 True
+                        app_table.update({
+                            "landlord_notified": True 
+                        }).eq("id", person["id"]).execute()
+                    else:
+                        st.error(f"❌ 郵件發送失敗，將於下次巡檢重試：{full_name}")
+                        # 失敗則不做更新，下一次 while True 迴圈會再次抓到這筆資料重試
+                
                 else:
-                    st.write(f"📄 已完成分析：{person['full_name']} ({score}分)")
-
-                # 更新標記，代表 Worker 已經處理過這筆「已分析」的資料
-                app_table.update({
-                    "landlord_notified": True 
-                }).eq("id", person["id"]).execute()
+                    # 分數低於 80 分，不需要寄信，直接標記為「已處理」以免重複盤查
+                    st.write(f"📄 已完成分析 (分數未達標)：{full_name} ({score}分)")
+                    app_table.update({
+                        "landlord_notified": True 
+                    }).eq("id", person["id"]).execute()
 
         # --- 狀態顯示 ---
         if not new_applicants and not to_review:
