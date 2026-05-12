@@ -492,6 +492,53 @@ def check_auth():
     
     return False
 
+
+def set_bg_hack(main_bg):
+    '''
+    A function to unpack an image from a local file and set it as the background.
+    '''
+    # 如果是本地檔案，需要轉成 base64
+    # main_bg_ext = "png"
+    # st.markdown(
+    #     f"""
+    #     <style>
+    #     .stApp {{
+    #         background: url(data:image/{main_bg_ext};base64,{base64.b64encode(open(main_bg, "rb").read()).decode()});
+    #         background-size: cover;
+    #         background-attachment: fixed;
+    #     }}
+    #     </style>
+    #     """,
+    #     unsafe_allow_html=True
+    # )
+    
+    # 如果是網路連結 (URL) 直接使用：
+    st.markdown(
+        f"""
+        <style>
+        .stApp {{
+            background: url("{main_bg}");
+            background-size: cover;
+            background-position: center;
+            background-attachment: fixed; /* 關鍵：讓背景固定不隨捲動位移 */
+            background-repeat: no-repeat;
+        }}
+        
+        /* 為了讓表單文字清楚，幫 Tab 內容增加一點半透明白底 */
+        [data-testid="stExpander"], [data-testid="stForm"] {{
+            background-color: rgba(255, 255, 255, 0.85);
+            border-radius: 15px;
+            padding: 20px;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+# 呼叫函數（替換成你的圖片連結）
+set_bg_hack("你的圖片URL_或是剛才生成的圖片路徑")
+
+
 # --- 修改你的主導航邏輯 ---
 def main():
     st.set_page_config(page_title="Lease AI 租房助手", layout="wide")
