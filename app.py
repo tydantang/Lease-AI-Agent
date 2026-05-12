@@ -13,171 +13,169 @@ import datetime
 
 current_env = st.secrets.get("config", {}).get("ENV", "prod").upper()
 
-
-
 with open(".streamlit/prompts.toml", "rb") as f:
 
     prompts = tomllib.load(f)
-
-
 
 with open(".streamlit/form_schema.toml", "rb") as f:
 
     form_config = tomllib.load(f)
 
-
-
 # --- 2. 頁面函式化 ---
-
-
 
 def render_tenant_portal():
     """租客入口：包含 AI 諮詢與提交申請"""
     tab1, tab2 = st.tabs(["AI 諮詢", "提交申請"])
     
     with tab1:
-        st.subheader("🏠 租屋 AI 小助手")
+        left_space, center_space, right_space = st.columns([1, 2, 1])
+
+        with center_space:
         
-        # 1. 從資料庫抓取即時房間狀態 (自動感應 _dev 表)
-        r_table = get_rooms_table()
-        rooms_info = r_table.select("room_name, status, lease_end").execute().data
-        
-        # 格式化房間資訊作為 AI 的背景知識
-        room_context = "\n目前的房間供應狀況如下：\n"
-        for r in rooms_info:
-            status_text = "✅ 目前可立即入住" if r['status'] == 'available' else f"❌ 已出租，預計 {r['lease_end']} 之後空出"
-            room_context += f"- {r['room_name']}: {status_text}\n"
-
-        # 2. 建立對話容器 (用來顯示對話紀錄)
-        chat_container = st.container()
-
-        # 初始化對話紀錄
-        if "messages" not in st.session_state:
-            st.session_state.messages = []
-
-        # --- 第二層防禦配置：設定歷史紀錄上限 ---
-        # 這裡設定保留最近 10 則訊息（約 5 輪對話），避免對話過長導致 AI 脫離角色 [1]
-        MAX_HISTORY = 10
-
-        # --- 第三層防禦配置：頻率限制設定 ---
-        MAX_REQUESTS_PER_MINUTE = 3  # 每分鐘最多 3 次發問 (配合 Gemini 2.5 限制) [cite: 112]
-        if "request_timestamps" not in st.session_state:
-            st.session_state.request_timestamps = []
-
-        chat_container = st.container()
-        if "messages" not in st.session_state:
-            st.session_state.messages = []
-
-        # 顯示歷史訊息
-        with chat_container:
-            for message in st.session_state.messages:
-                with st.chat_message(message["role"]):
-                    st.markdown(message["content"])
-
-        # 3. 專用的打字框
-        if prompt := st.chat_input("請詢問空房時間、居住條款或照片資訊..."):
+            st.subheader("🏠 租屋 AI 小助手")
             
-            # --- 第三層防禦實作：檢查請求頻率 ---
-            current_time = time.time()
-            # 清除超過 60 秒前的紀錄
-            st.session_state.request_timestamps = [t for t in st.session_state.request_timestamps if current_time - t < 60]
+            # 1. 從資料庫抓取即時房間狀態 (自動感應 _dev 表)
+            r_table = get_rooms_table()
+            rooms_info = r_table.select("room_name, status, lease_end").execute().data
             
-            if len(st.session_state.request_timestamps) >= MAX_REQUESTS_PER_MINUTE:
-                wait_time = int(60 - (current_time - st.session_state.request_timestamps[0]))
-                st.error(f"哎呀，您問得太快，我的 AI 大腦快要冒煙啦！♨️ 請稍等 {wait_time} 秒再試。")
-            else:
-                # 紀錄本次請求時間
-                st.session_state.request_timestamps.append(current_time)
+            # 格式化房間資訊作為 AI 的背景知識
+            room_context = "\n目前的房間供應狀況如下：\n"
+            for r in rooms_info:
+                status_text = "✅ 目前可立即入住" if r['status'] == 'available' else f"❌ 已出租，預計 {r['lease_end']} 之後空出"
+                room_context += f"- {r['room_name']}: {status_text}\n"
 
-                # 立即顯示使用者輸入
-                st.session_state.messages.append({"role": "user", "content": prompt})
-                with chat_container:
-                    with st.chat_message("user"):
-                        st.markdown(prompt)
+            # 2. 建立對話容器 (用來顯示對話紀錄)
+            chat_container = st.container()
 
-                    with st.chat_message("assistant"):
-                        with st.spinner("AI 正在回覆..."):
-                            # ... (System Instruction 組合與對話歷史截取邏輯保持不變) ...
-                            base_instruction = prompts['chat_bot']['system_instruction']
-                            instruction = f"{base_instruction}\n\n{room_context}"
-                            recent_history = st.session_state.messages[-(MAX_HISTORY+1):-1]
-                            history_text = "\n".join([f"{m['role']}: {m['content']}" for m in recent_history])
-                            full_prompt = f"{instruction}\n\n[近期對話紀錄]\n{history_text}\n\nUser: {prompt}"
+            # 初始化對話紀錄
+            if "messages" not in st.session_state:
+                st.session_state.messages = []
 
-                            pipeline = get_model_pipeline(instruction)
-                            response_text = None
-                            for model, model_name in pipeline:
-                                try:
-                                    response = model.generate_content(full_prompt)
-                                    response_text = response.text
-                                    break
-                                except Exception as e:
-                                    st.warning(f"⚠️ {model_name} 暫時無法使用: {e}")
-                            
-                            if response_text:
-                                st.markdown(response_text)
-                                st.session_state.messages.append({"role": "assistant", "content": response_text})
-                                # 強制切片保持歷史長度
-                                if len(st.session_state.messages) > MAX_HISTORY:
-                                    st.session_state.messages = st.session_state.messages[-MAX_HISTORY:]
-                            else:
-                                st.error("❌ 目前 AI 服務暫時中斷。")
+            # --- 第二層防禦配置：設定歷史紀錄上限 ---
+            # 這裡設定保留最近 10 則訊息（約 5 輪對話），避免對話過長導致 AI 脫離角色 [1]
+            MAX_HISTORY = 10
 
+            # --- 第三層防禦配置：頻率限制設定 ---
+            MAX_REQUESTS_PER_MINUTE = 3  # 每分鐘最多 3 次發問 (配合 Gemini 2.5 限制) [cite: 112]
+            if "request_timestamps" not in st.session_state:
+                st.session_state.request_timestamps = []
+
+            chat_container = st.container()
+            if "messages" not in st.session_state:
+                st.session_state.messages = []
+
+            # 顯示歷史訊息
+            with chat_container:
+                for message in st.session_state.messages:
+                    with st.chat_message(message["role"]):
+                        st.markdown(message["content"])
+
+            # 3. 專用的打字框
+            if prompt := st.chat_input("請詢問空房時間、居住條款或照片資訊..."):
+                
+                # --- 第三層防禦實作：檢查請求頻率 ---
+                current_time = time.time()
+                # 清除超過 60 秒前的紀錄
+                st.session_state.request_timestamps = [t for t in st.session_state.request_timestamps if current_time - t < 60]
+                
+                if len(st.session_state.request_timestamps) >= MAX_REQUESTS_PER_MINUTE:
+                    wait_time = int(60 - (current_time - st.session_state.request_timestamps[0]))
+                    st.error(f"哎呀，您問得太快，我的 AI 大腦快要冒煙啦！♨️ 請稍等 {wait_time} 秒再試。")
+                else:
+                    # 紀錄本次請求時間
+                    st.session_state.request_timestamps.append(current_time)
+
+                    # 立即顯示使用者輸入
+                    st.session_state.messages.append({"role": "user", "content": prompt})
+                    with chat_container:
+                        with st.chat_message("user"):
+                            st.markdown(prompt)
+
+                        with st.chat_message("assistant"):
+                            with st.spinner("AI 正在回覆..."):
+                                # ... (System Instruction 組合與對話歷史截取邏輯保持不變) ...
+                                base_instruction = prompts['chat_bot']['system_instruction']
+                                instruction = f"{base_instruction}\n\n{room_context}"
+                                recent_history = st.session_state.messages[-(MAX_HISTORY+1):-1]
+                                history_text = "\n".join([f"{m['role']}: {m['content']}" for m in recent_history])
+                                full_prompt = f"{instruction}\n\n[近期對話紀錄]\n{history_text}\n\nUser: {prompt}"
+
+                                pipeline = get_model_pipeline(instruction)
+                                response_text = None
+                                for model, model_name in pipeline:
+                                    try:
+                                        response = model.generate_content(full_prompt)
+                                        response_text = response.text
+                                        break
+                                    except Exception as e:
+                                        st.warning(f"⚠️ {model_name} 暫時無法使用: {e}")
+                                
+                                if response_text:
+                                    st.markdown(response_text)
+                                    st.session_state.messages.append({"role": "assistant", "content": response_text})
+                                    # 強制切片保持歷史長度
+                                    if len(st.session_state.messages) > MAX_HISTORY:
+                                        st.session_state.messages = st.session_state.messages[-MAX_HISTORY:]
+                                else:
+                                    st.error("❌ 目前 AI 服務暫時中斷。")
 
     with tab2:
+        
+        # 使用 columns 創造置中的窄版區塊 (比例 1:2:1)
+        # 這樣表單會佔據中間 50% 的寬度
+        left_space, center_space, right_space = st.columns([1, 2, 1])
 
-        st.subheader("填寫租屋申請單")
+        with center_space:
+            st.subheader("填寫租屋申請單")
+            new_applicant_data = {}
 
-        new_applicant_data = {}
+            with st.form("lease_form", clear_on_submit=True):
+                for field in form_config["fields"]:
+                    fid = field["id"]
+                    label = field["label"]
+                    ftype = field["type"]
+                    fhelp = field.get("description", None)
 
-        with st.form("lease_form", clear_on_submit=True):
+                    if ftype == "text":
+                        new_applicant_data[fid] = st.text_input(label, help=fhelp)
+                    
+                    elif ftype == "number":
+                        new_applicant_data[fid] = st.number_input(label, min_value=1, step=1, help=fhelp)
+                    
+                    elif ftype == "select":
+                        # 在選項最前面插入一個空值作為預設
+                        original_options = field.get("options", [])
+                        options = ["請選擇..."] + original_options
+                        
+                        selected_val = st.selectbox(label, options=options, help=fhelp)
+                        
+                        # 如果使用者沒選，存入 None 或空字串，觸發必填檢查
+                        new_applicant_data[fid] = selected_val if selected_val != "請選擇..." else None
 
-            for field in form_config["fields"]:
+                    elif ftype == "date":
+                        # 將 value 設為 None，會顯示 "YYYY/MM/DD" 的預設文字
+                        val = st.date_input(label, value=None, help=fhelp)
+                        
+                        # 如果 val 為 None，存入空值；否則轉為 isoformat
+                        new_applicant_data[fid] = val.isoformat() if val else None
 
-                fid = field["id"]
+                    elif ftype == "area":
+                        new_applicant_data[fid] = st.text_area(label, help=fhelp)
 
-                label = field["label"]
-
-                ftype = field["type"]
-
-                if ftype == "text":
-
-                    new_applicant_data[fid] = st.text_input(label)
-
-                elif ftype == "date":
-
-                    val = st.date_input(label)
-
-                    new_applicant_data[fid] = val.isoformat()
-
-                elif ftype == "area":
-
-                    new_applicant_data[fid] = st.text_area(label)
-
-            
-
-            submitted = st.form_submit_button("確認送出")
-
-            if submitted:
-
-                missing = [f["label"] for f in form_config["fields"] 
-
-                           if f["required"] and not new_applicant_data.get(f["id"])]
-
-                if not missing:
-
-                    new_applicant_data["ai_status"] = "pending"
-
-                    save_application(new_applicant_data)
-
-                    st.success("✅ 申請已收到！我們會盡快審核。")
-
-                    st.balloons()
-
-                else:
-
-                    st.warning(f"請填寫必填欄位：{', '.join(missing)}")
-
+                submitted = st.form_submit_button("確認送出", use_container_width=True)
+                
+                if submitted:
+                    # 檢查必填邏輯維持不變
+                    missing = [f["label"] for f in form_config["fields"] 
+                            if f["required"] and not str(new_applicant_data.get(f["id"], "")).strip()]
+                    
+                    if not missing:
+                        new_applicant_data["ai_status"] = "pending"
+                        save_application(new_applicant_data)
+                        st.success("✅ 申請已收到！我們會盡快審核。")
+                        st.balloons()
+                    else:
+                        st.warning(f"請填寫必填欄位：{', '.join(missing)}")
 
 
 @st.dialog("預約詳細資訊")

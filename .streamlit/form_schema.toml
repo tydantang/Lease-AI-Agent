@@ -13,29 +13,78 @@ required = true
 ai_include = false
 
 [[fields]]
+id = "phone"
+label = "電話*"
+type = "text"
+required = true
+ai_include = false
+
+[[fields]]
 id = "occupation"
 label = "職業"
 type = "text"
-required = false
+required = true
 ai_include = true
 
 [[fields]]
+id = "occupation_detail"
+label = "任職公司名稱"
+type = "text"
+required = false
+ai_include = true
+description = "提供任職單位可協助我們評估收入來源的穩定性。"
+
+[[fields]]
+id = "monthly_income"
+label = "預估月收入 (稅前)*"
+type = "text"
+required = true
+ai_include = true
+description = "此資訊僅用於確保租客具備穩定的財務能力負擔租金，降低雙方合約風險。"
+
+[[fields]]
+id = "occupant_count"
+label = "預計入住總人數*"
+type = "number"
+required = true
+ai_include = true
+description = "為符合建築消防安全及居住品質規範，我們需確認實際居住人數。"
+
+[[fields]]
+id = "pet_info"
+label = "有無寵物 (品種與數量)*"
+type = "text"
+required = true
+ai_include = true
+description = "了解寵物狀況可協助我們評估是否需額外清潔或是否有社區噪音限制。"
+
+[[fields]]
+id = "smoking"
+label = "是否吸菸*"
+type = "select"
+options = ["不吸菸", "吸菸 (含電子菸)"]
+required = true
+ai_include = true
+description = "為維護室內空氣品質及預防煙味殘留，房東需了解租客的生活習慣。"
+
+[[fields]]
 id = "move_in_date"
-label = "入住日*"
+label = "預計入住日*"
 type = "date"
 required = true
 ai_include = true
 
 [[fields]]
 id = "move_out_date"
-label = "搬出日*"
+label = "預計搬出日*"
 type = "date"
 required = true
 ai_include = true
 
 [[fields]]
 id = "message"
-label = "給屋主的話"
+label = "想對房東說的話 (加分題：建議包含搬家原因、工作穩定性或居住習慣)*"
 type = "area"
-required = false
+required = true
 ai_include = true
+description = "這是我們認識您的重要管道！分享如：『我在 XX 科技公司穩定工作三年，因為想縮短通勤距離而搬家，喜歡乾淨不吵鬧...』有助於加快審核速度。"
