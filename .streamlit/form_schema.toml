@@ -68,6 +68,14 @@ ai_include = true
 description = "為維護室內空氣品質及預防煙味殘留，房東需了解租客的生活習慣。"
 
 [[fields]]
+id = "room_name"
+label = "房型*"
+type = "select"
+options = ["雅房A", "雅房B", "套房C"]
+required = true
+ai_include = true
+
+[[fields]]
 id = "move_in_date"
 label = "預計入住日*"
 type = "date"

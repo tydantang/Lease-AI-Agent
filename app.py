@@ -2,12 +2,14 @@ import streamlit as st
 import tomllib
 import json  # 必須引入，用於解析 AI 回傳的格式
 from database import *
+import contract_worker as cw
 from models import get_model_pipeline, get_gen_config 
 import time # 加入這個來做極短暫的緩衝
 import pandas as pd
 from streamlit_calendar import calendar
 import uuid
 import datetime
+import base64
 
 # --- 1. 配置與讀取 ---
 
@@ -234,9 +236,9 @@ def render_admin_dashboard():
     # --- 狀態初始化 ---
     if "selected_room_id" not in st.session_state:
         st.session_state.selected_room_id = None
-    if "last_calendar_click" not in st.session_state:
-        st.session_state.last_calendar_click = None
-
+    if "last_click_feature" not in st.session_state:
+        st.session_state.last_click_feature = None
+    
     today = datetime.date.today()
     tab_room, tab_app = st.tabs(["🏠 房間狀態管理", "📋 申請人審核"])
 
@@ -461,8 +463,31 @@ def render_admin_dashboard():
                 
                 with st.expander(f"{label} ({score}分) - {person['full_name']}"):
                     st.write(f"**分析點評：** {person.get('ai_summary', '尚無總結')}")
-                    if st.button(f"批准並發送合約", key=f"app_v2_{person['id']}"):
+                    if st.button(f"批准並生成合約", key=f"approve_{person['id']}"):
                         st.balloons()
+                        
+                        with st.spinner("正在從申請單提取資料並計算租金..."):
+                            # 直接使用當前迴圈中的 person 資料
+                            contract_data = get_contract_data(person['id'])
+                            
+                            if contract_data:
+                                # 呼叫 contract_worker 生成檔案 (Word 或 PDF)
+                                file_path = cw.generate_contract(contract_data)
+                                
+                                if file_path:
+                                    st.success(f"✅ 合約草稿已生成")
+                                    
+                                    with open(file_path, "rb") as f:
+                                        st.download_button(
+                                            label="⬇️ 下載合約檢查 (Word)",
+                                            data=f,
+                                            file_name=f"Lease_Agreement_{person['full_name']}.docx",
+                                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                                        )
+                                    
+                                    st.info("💡 請檢查金額與日期是否正確。確認無誤後即可手動或自動寄出。")
+                            else:
+                                st.error("無法從申請單轉換資料，請檢查欄位是否齊全。")
 
 
 # --- 3. 主程式進入點 ---
@@ -493,51 +518,62 @@ def check_auth():
     return False
 
 
-def set_bg_hack(main_bg):
-    '''
-    A function to unpack an image from a local file and set it as the background.
-    '''
-    # 如果是本地檔案，需要轉成 base64
-    # main_bg_ext = "png"
-    # st.markdown(
-    #     f"""
-    #     <style>
-    #     .stApp {{
-    #         background: url(data:image/{main_bg_ext};base64,{base64.b64encode(open(main_bg, "rb").read()).decode()});
-    #         background-size: cover;
-    #         background-attachment: fixed;
-    #     }}
-    #     </style>
-    #     """,
-    #     unsafe_allow_html=True
-    # )
+def set_bg_with_blur(main_bg_file):
+    with open(main_bg_file, "rb") as f:
+        bin_str = base64.b64encode(f.read()).decode()
     
-    # 如果是網路連結 (URL) 直接使用：
     st.markdown(
         f"""
         <style>
         .stApp {{
-            background: url("{main_bg}");
+            background-image: linear-gradient(rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0.6)), 
+                              url("data:image/png;base64,{bin_str}");
             background-size: cover;
+            background-attachment: fixed;
             background-position: center;
-            background-attachment: fixed; /* 關鍵：讓背景固定不隨捲動位移 */
-            background-repeat: no-repeat;
         }}
         
-        /* 為了讓表單文字清楚，幫 Tab 內容增加一點半透明白底 */
-        [data-testid="stExpander"], [data-testid="stForm"] {{
-            background-color: rgba(255, 255, 255, 0.85);
-            border-radius: 15px;
-            padding: 20px;
+        /* 讓內容區塊更突出 */
+        [data-testid="stForm"] {{
+            background-color: rgba(255, 255, 255, 0.9);
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.05);
+        }}
+
+        /* 1. 針對 Expander 容器本體 */
+        [data-testid="stExpander"] {{
+            background-color: rgba(255, 255, 255, 0.85) !important; /* 85% 透明白底 */
+            border-radius: 15px !important;
+            border: 1px solid rgba(200, 200, 200, 0.3) !important;
+            margin-bottom: 1rem !important;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05) !important;
+        }}
+
+        /* 2. 針對 Expander 的標題列 (Header) */
+        [data-testid="stExpanderSummary"] {{
+            background-color: transparent !important; /* 讓標題列背景透明，露出容器底色 */
+            color: #2F4F4F !important; /* 強制標題文字顏色 */
+            font-weight: 600 !important;
+        }}
+
+        /* 3. 針對 Expander 展開後的內容區塊 */
+        [data-testid="stExpanderDetails"] {{
+            background-color: transparent !important;
+            padding: 20px !important;
+        }}
+        
+        /* 4. 滑鼠移過標題列時的顏色稍微變深，增加互動感 */
+        [data-testid="stExpanderSummary"]:hover {{
+            background-color: rgba(255, 255, 255, 0.1) !important;
         }}
         </style>
         """,
         unsafe_allow_html=True
     )
 
-# 呼叫函數（替換成你的圖片連結）
-set_bg_hack("你的圖片URL_或是剛才生成的圖片路徑")
-
+# 執行背景設定
+set_bg_with_blur('assets/bg.png')
 
 # --- 修改你的主導航邏輯 ---
 def main():

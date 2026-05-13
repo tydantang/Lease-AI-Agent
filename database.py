@@ -5,80 +5,115 @@ import datetime
 # --- 基礎配置 ---
 
 def get_env():
-    """統一獲取當前環境標籤 (prod 或 dev)"""
     return st.secrets.get("config", {}).get("ENV", "prod").lower()
 
 @st.cache_resource
 def get_supabase(use_admin=False) -> Client:
-    """根據權限需求初始化 Supabase 連線"""
     url = st.secrets["supabase"]["SUPABASE_URL"]
-    # 自動切換 Key：Admin 使用 Service Key 繞過 RLS，一般則用 Anon Key
     key = st.secrets["supabase"]["SUPABASE_SERVICE_KEY"] if use_admin else st.secrets["supabase"]["SUPABASE_KEY"]
     return create_client(url, key)
 
 def get_table(base_name, use_admin=False):
-    """
-    通用資料表導流器：
-    根據 ENV 自動決定是否加上 _dev 後綴
-    """
     env = get_env()
     table_name = base_name if env == "prod" else f"{base_name}_dev"
     return get_supabase(use_admin=use_admin).table(table_name)
 
-# --- 功能模組 (指揮官調用的具體接口) ---
+# --- 功能模組 ---
 
-def get_applications_table(use_admin=False):
-    """獲取申請人資料表"""
-    return get_table("applications", use_admin=use_admin)
+def get_applications_table(use_admin=False): return get_table("applications", use_admin=use_admin)
+def get_rooms_table(use_admin=False): return get_table("rooms", use_admin=use_admin)
+def get_leases_table(use_admin=False): return get_table("leases", use_admin=use_admin)
 
-def get_rooms_table(use_admin=False):
-    """獲取房間狀態表"""
-    return get_table("rooms", use_admin=use_admin)
+# --- [新功能] 合約資料抓取與自動計算 ---
 
-def get_leases_table(use_admin=False):
+def get_contract_data(application_id):
     """
-    獲取租約排程表 (leases)
-    用於處理一間房多筆租約的邏輯
+    正規版：利用 Supabase 實體外鍵關聯進行 Join 查詢
     """
-    return get_table("leases", use_admin=use_admin)
+    env = st.secrets.get("config", {}).get("ENV", "prod").lower()
+    rooms_table = "rooms_dev" if env == "dev" else "rooms"
+
+    # 因為有了 Foreign Key，我們可以用 table!hint(*) 語法
+    # 或者如果只有一個關聯，直接寫 rooms_table(*) 即可
+    try:
+        res = get_table("applications", use_admin=True)\
+            .select(f"*, {rooms_table}!room_name(*)")\
+            .eq("id", application_id)\
+            .single().execute()
+        
+        if not res.data:
+            return None
+            
+        app = res.data
+        room = app.get(rooms_table) # 直接從回傳結果拿關聯的 room 物件
+        
+        if not room:
+            return None
+
+    # 2. 解析日期與計算
+        try:
+            # 如果申請單有填 move_in_date 則優先使用
+            start_date = datetime.date.fromisoformat(app.get("move_in_date"))
+            end_date = datetime.date.fromisoformat(app.get("move_out_date"))
+        except (TypeError, ValueError):
+            # 否則預設今天開始租一年
+            start_date = datetime.date.today()
+            end_date = start_date + datetime.timedelta(days=365)
+        
+        total_days = (end_date - start_date).days
+        payment_1_date = datetime.date.today()
+        payment_2_date = start_date + datetime.timedelta(days=total_days // 2)
+        
+        # 3. 金額計算
+        daily_rent = room.get("daily_rent", 0)
+        total_rent = daily_rent * total_days
+        deposit = daily_rent * 30
+        payment_1 = total_rent * 0.5 
+        
+        # 4. 回傳 Word 標籤字典
+        return {
+            "tenant_name": app.get("full_name", "N/A"),
+            "room_name": room.get("room_name", "N/A"),
+            "room_name_en": room.get("room_name_en", "N/A"), 
+            "lease_start": start_date.strftime("%Y年%m月%d日"),
+            "lease_end": end_date.strftime("%Y年%m月%d日"),
+            "lease_start_en": start_date.strftime("%B %d, %Y"),
+            "lease_end_en": end_date.strftime("%B %d, %Y"),
+            "total_days": total_days,
+            "daily_rent": f"{daily_rent:,.0f}",
+            "total_rent": f"{total_rent:,.0f}",
+            "deposit": f"{deposit:,.0f}",
+            "payment_1": f"{payment_1:,.0f}",
+            "payment_2": f"{(total_rent - payment_1):,.0f}",
+            "payment_1_date": payment_1_date.strftime("%Y年%m月%d日"),
+            "payment_2_date": payment_2_date.strftime("%Y年%m月%d日"),
+            "payment_1_date_en": payment_1_date.strftime("%B %d, %Y"),
+            "payment_2_date_en": payment_2_date.strftime("%B %d, %Y")
+        }
+    except Exception as e:
+        st.error(f"資料庫關聯查詢失敗: {e}")
+        return None
+
+# --- 優化後的 CRUD 操作 ---
 
 def save_application(data):
     """將申請資料寫入資料庫"""
-    table = get_applications_table(use_admin=True) 
     try:
-        response = table.insert(data).execute()
-        return response
+        # 移除 st.error，改由調用端決定如何顯示錯誤，保持 database.py 純淨
+        return get_applications_table(use_admin=True).insert(data).execute()
     except Exception as e:
-        st.error(f"🚨 資料庫寫入失敗！")
-        st.exception(e) 
         raise e
-
-def update_lease_record(lease_id, data):
-    """
-    更新特定租約紀錄
-    會自動包含 updated_at 時間戳
-    """
-    table = get_leases_table(use_admin=True)
-    data["updated_at"] = datetime.datetime.now().isoformat()
-    return table.update(data).eq("id", lease_id).execute()
 
 def create_lease_record(data):
-    """
-    新增租約紀錄
-    """
-    table = get_leases_table(use_admin=True)
+    """新增租約並自動加上時間戳"""
     data["updated_at"] = datetime.datetime.now().isoformat()
-    return table.insert(data).execute()
+    return get_leases_table(use_admin=True).insert(data).execute()
+
+def update_lease_record(lease_id, data):
+    """更新租約"""
+    data["updated_at"] = datetime.datetime.now().isoformat()
+    return get_leases_table(use_admin=True).update(data).eq("id", lease_id).execute()
 
 def delete_lease_record(lease_id):
-    """
-    從租約表中刪除特定紀錄
-    """
-    table = get_leases_table(use_admin=True) # 使用 admin 權限執行刪除
-    try:
-        response = table.delete().eq("id", lease_id).execute()
-        return response
-    except Exception as e:
-        st.error(f"🚨 刪除失敗！")
-        st.exception(e)
-        raise e
+    """刪除租約"""
+    return get_leases_table(use_admin=True).delete().eq("id", lease_id).execute()
