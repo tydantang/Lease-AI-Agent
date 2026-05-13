@@ -1,6 +1,5 @@
 .venv/
 __pycache__/
 .streamlit/secrets.toml
-.streamlit/config.toml
 *.pyc
 compressor.py

@@ -1,0 +1,9 @@
+[theme]
+# 強制使用亮色底色
+base = "light"
+
+# 為了配合你的日系背景，可以微調主要顏色
+primaryColor = "#7A9D8C"          # 莫蘭迪綠（與你的庭院色調相近）
+backgroundColor = "#FFFFFF"       # 基本背景白色
+secondaryBackgroundColor = "#F8F9FA" # 側邊欄或輸入框底色
+textColor = "#31333F"             # 主要文字顏色（深灰）
